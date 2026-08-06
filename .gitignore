@@ -1,0 +1,10 @@
+/coverage/
+/pkg/
+/tmp/
+/.bundle/
+/vendor/bundle
+*.gem
+.DS_Store
+CLAUDE.md
+/docs/*
+.vscode

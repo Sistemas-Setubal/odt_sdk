@@ -1,0 +1,28 @@
+directories:
+  "/":
+    IrresponsibleModule:
+      enabled: false
+
+    FeatureEnvy:
+      enabled: false
+
+    NilCheck:
+      enabled: false
+
+    TooManyStatements:
+      enabled: true
+      max_statements: 10
+
+    UtilityFunction:
+      enabled: true
+      public_methods_only: true
+
+    InstanceVariableAssumption:
+      enabled: false
+
+# Directories and files below will not be scanned at all
+exclude_paths:
+  - bin
+  - log
+  - spec
+  - vendor

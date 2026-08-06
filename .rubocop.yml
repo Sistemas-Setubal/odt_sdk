@@ -1,0 +1,5 @@
+# Orenn's Ruby styling for Rails
+inherit_gem:
+  orenns-rubocop-rails: rubocop.yml
+
+# Your own specialized rules go here
