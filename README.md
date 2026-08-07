@@ -76,6 +76,25 @@ though its prose says seconds. This is still open with ODT — the request hash
 is computed over the same timestamp string that gets sent, so the wrong unit
 makes every request fail validation on their side.
 
+## Request hash
+
+Every ODT request carries a `security` block signed with MD5 over
+`partner_id + time + secure_key`, in that exact order.
+`OdtSdk::Security.hash_for` computes it:
+
+```ruby
+OdtSdk::Security.hash_for(
+  partner_id: 'EXAMPLE_PARTNER_ID',
+  time: '1679590064554',
+  secure_key: 'EXAMPLE_SECURE_KEY'
+)
+# => "EXAMPLE_HASHING_VALUE"
+```
+
+The `secure_key` only feeds the digest — it never travels in the payload. The
+`time` must be the very same string that goes out in the request, so generate
+both together rather than reading the clock twice.
+
 ## Development
 
 ```bash
