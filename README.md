@@ -6,6 +6,76 @@ Ruby SDK for the ODT API.
 
 Ruby `>= 3.4.0` (pinned to 3.4.3 in `.ruby-version`).
 
+## Configuration
+
+`OdtSdk::Configuration` holds the credentials and connection settings. Build
+one and assign what you need:
+
+```ruby
+require 'odt_sdk'
+
+config = OdtSdk::Configuration.new
+config.partner_id = 'LOCAL_OTP'
+config.secure_key = 'your-secure-key'
+config.service_id = 'OTP_1'
+```
+
+| Setting          | Required | Default                        | Notes |
+|------------------|----------|--------------------------------|-------|
+| `partner_id`     | yes      | —                              | Partner identifier issued by ODT. |
+| `secure_key`     | yes      | —                              | Signs the request hash. Never sent in the payload, never commit it. |
+| `service_id`     | no       | —                              | Partner application identifier. |
+| `base_url`       | no       | `https://smsapi.odt.com.mx`    | Override to point at another host. |
+| `timeout`        | no       | `10`                           | Request timeout in seconds. |
+| `timestamp_unit` | no       | `:milliseconds`                | `:milliseconds` or `:seconds`. |
+
+
+A Rails initializer looks like this:
+
+```ruby
+# config/initializers/odt_sdk.rb
+ODT_CONFIG = OdtSdk::Configuration.new.tap do |config|
+  config.partner_id = Rails.application.credentials.dig(:odt, :partner_id)
+  config.secure_key = Rails.application.credentials.dig(:odt, :secure_key)
+  config.service_id = 'OTP_1'
+  config.timeout    = 15
+end
+```
+
+Each `Configuration` is an independent object, so a single process can hold
+several — one per environment or per partner.
+
+### Validation
+
+`validate!` requires `partner_id` and `secure_key`, and returns the
+configuration so it chains. Blank strings count as missing, since an unset
+environment variable usually arrives as `""` rather than `nil`:
+
+```ruby
+config.validate!
+# => OdtSdk::ConfigurationError: Missing ODT credentials: partner_id, secure_key.
+#    Assign them on the configuration before sending requests.
+
+config.validate   # => false, never raises
+```
+
+Every missing credential is named at once, so you fix them in a single pass.
+
+`timestamp_unit` is validated on assignment instead — it normalizes casing and
+whitespace, and rejects anything outside the two valid units:
+
+```ruby
+config.timestamp_unit = '  SECONDS  '   # => :seconds
+config.timestamp_unit = :minutes
+# => OdtSdk::ConfigurationError: Unknown timestamp unit :minutes.
+#    Valid units: milliseconds, seconds.
+```
+
+The default is milliseconds: ODT's manual shows a 13-digit timestamp even
+though its prose says seconds. This is still open with ODT — the request hash
+is computed over the same timestamp string that gets sent, so the wrong unit
+makes every request fail validation on their side.
+
 ## Development
 
 ```bash

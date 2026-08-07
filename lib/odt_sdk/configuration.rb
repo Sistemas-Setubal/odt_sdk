@@ -3,6 +3,7 @@
 module OdtSdk
   class Configuration
     TIMESTAMP_UNITS = %i[milliseconds seconds].freeze
+    REQUIRED_SETTINGS = %i[partner_id secure_key].freeze
 
     DEFAULT_BASE_URL = 'https://smsapi.odt.com.mx'
     DEFAULT_TIMEOUT = 10
@@ -73,6 +74,20 @@ module OdtSdk
       end
 
       @settings[:timestamp_unit] = unit
+    end
+
+    def validate
+      REQUIRED_SETTINGS.none? { |setting| @settings[setting].to_s.strip.empty? }
+    end
+
+    def validate!
+      return self if validate
+
+      missing = REQUIRED_SETTINGS.select { |setting| @settings[setting].to_s.strip.empty? }
+
+      raise ConfigurationError,
+            "Missing ODT credentials: #{missing.join ', '}. " \
+            'Assign them on the configuration before sending requests.'
     end
   end
 end

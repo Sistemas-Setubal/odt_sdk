@@ -69,6 +69,63 @@ RSpec.describe OdtSdk::Configuration do
     end
   end
 
+  describe '#validate' do
+    it 'is false while the credentials are missing' do
+      expect(config.validate).to be(false)
+    end
+
+    it 'is true once the credentials are assigned' do
+      config.partner_id = 'LOCAL_OTP'
+      config.secure_key = 'XBYi9RC0'
+
+      expect(config.validate).to be(true)
+    end
+
+    it 'does not raise' do
+      expect { config.validate }.not_to raise_error
+    end
+  end
+
+  describe '#validate!' do
+    before do
+      config.partner_id = 'LOCAL_OTP'
+      config.secure_key = 'XBYi9RC0'
+    end
+
+    it 'returns the configuration when the credentials are present' do
+      expect(config.validate!).to be(config)
+    end
+
+    it 'does not require service_id' do
+      expect { config.validate! }.not_to raise_error
+    end
+
+    it 'rejects a missing partner_id' do
+      config.partner_id = nil
+
+      expect { config.validate! }.to raise_error(OdtSdk::ConfigurationError, /partner_id/)
+    end
+
+    it 'rejects a missing secure_key' do
+      config.secure_key = nil
+
+      expect { config.validate! }.to raise_error(OdtSdk::ConfigurationError, /secure_key/)
+    end
+
+    it 'names every missing credential at once' do
+      config.partner_id = nil
+      config.secure_key = nil
+
+      expect { config.validate! }.to raise_error(/partner_id, secure_key/)
+    end
+
+    it 'treats a blank secure_key as missing' do
+      config.secure_key = '   '
+
+      expect { config.validate! }.to raise_error(OdtSdk::ConfigurationError, /secure_key/)
+    end
+  end
+
   describe '#timestamp_unit=' do
     it 'accepts seconds' do
       config.timestamp_unit = :seconds
