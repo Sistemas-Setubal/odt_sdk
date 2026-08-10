@@ -176,6 +176,33 @@ client.send_sms(number: '5500000010', message: 'Tu codigo de verificacion es 123
                 carrier: OdtSdk::Carriers::TELCEL, encode: OdtSdk::Encodings::UCS2)
 ```
 
+### Raising instead of checking
+
+`send_sms` always returns a `Response`, whatever ODT answered. `send_sms!` sends
+the same request and raises `OdtSdk::ApiError` when the message did not go out:
+
+```ruby
+client.send_sms!(number: '5500000010', message: 'Tu codigo es 123456', carrier: 1)
+# => OdtSdk::ApiError: ODT answered code "101" (HTTP 200): "malformed".
+```
+
+The error carries the parts you need to react or log, including the whole
+response:
+
+```ruby
+rescue OdtSdk::ApiError => e
+  e.code         # => "101"
+  e.api_message  # => "malformed"
+  e.response     # => the OdtSdk::Response, with http_status and body
+end
+```
+
+It raises on anything `failure?` covers, **including a queued message** — see the
+Response section for why. If deferred delivery is a normal outcome for you, use
+`send_sms` and branch on `queued?` instead of rescuing.
+
+`request!` is the same pairing for the lower level entry point.
+
 `#request` is the lower level entry point, for a payload you assembled yourself:
 
 ```ruby
@@ -304,9 +331,35 @@ OdtSdk::Encodings::UCS2       # => 2, 70 chars, accents and unicode allowed
 same check whether the value came from your code or from a form field. A leading
 zero reads as base ten, so `"010"` is rejected rather than quietly becoming `8`.
 
-Accents are illegal under `REPLACING`, the default, and get replaced. Write OTP
-copy without them ("codigo", "verificacion"). `UCS2` allows them but drops the
+Accents are illegal under `REPLACING`, the default, and ODT replaces them
+silently — `código` is delivered as something else, and the reply is still a
+`"0"`. The SDK refuses the message instead, so the substitution never happens
+behind your back:
+
+```ruby
+client.send_sms(number: '5500000010', message: 'Tu código es 123456', carrier: 1)
+# => ArgumentError: message carries characters this encoding replaces.
+#    Write it without accents, or send it with Encodings::UCS2.
+```
+
+Two ways out: write the copy without accents ("codigo", "verificacion"), or pass
+`encode: OdtSdk::Encodings::UCS2`, which allows accents and unicode but drops the
 limit to 70 characters.
+
+`Encodings.supports?` is the check on its own, if you want to branch before
+sending:
+
+```ruby
+OdtSdk::Encodings.supports?('Tu codigo', OdtSdk::Encodings::REPLACING)  # => true
+OdtSdk::Encodings.supports?('Tu código', OdtSdk::Encodings::REPLACING)  # => false
+OdtSdk::Encodings.supports?('Tu código', OdtSdk::Encodings::UCS2)       # => true
+```
+
+The rule is deliberately conservative: anything outside ASCII is refused unless
+the encoding is UCS-2. Strict GSM does define a handful of accented characters,
+so a few of them are rejected here that GSM itself would carry — but ODT's manual
+says it replaces accents under encoding `0`, and a message that arrives mangled
+is worse than one that never left.
 
 ## Transport
 
@@ -364,6 +417,58 @@ response.id           # => "1"
 `code` is what decides the outcome, not the HTTP status: `"0"` is success, `"1"`
 queued, `"2"` a retryable temporary failure, `"101"` malformed. ODT answers `200`
 for all of them.
+
+`status` maps the manual's codes onto names you can read and branch on:
+
+| `code`  | `status`             | Meaning |
+|---------|----------------------|---------|
+| `"0"`   | `:success`           | Sent. |
+| `"1"`   | `:queued`            | Accepted, delivery deferred. |
+| `"2"`   | `:temporary_failure` | Not delivered, transient — worth retrying. |
+| `"101"` | `:malformed`         | Illegal field values; retrying will not help. |
+| other   | `:unknown`           | Undocumented code, or a body the SDK could not parse. |
+
+```ruby
+case response.status
+when :success           then confirm_sent
+when :queued            then check_back_later
+when :temporary_failure then retry_in(30.seconds)
+else                         report response
+end
+```
+
+Four predicates read the same thing:
+
+```ruby
+response.success?    # => status is :success
+response.queued?     # => status is :queued, accepted for deferred delivery
+response.retryable?  # => status is :temporary_failure, ODT says to try again
+response.failure?    # => anything that is not :success
+```
+
+`retryable?` is the one worth acting on: `"2"` is the only code the manual tells
+you to retry. Retrying a `"101"` sends the same illegal field values again and
+gets the same answer.
+
+`failure?` is the complement of `success?`, so **a queued message is both
+`queued?` and `failure?`**. That follows ODT's own rule — only `"0"` means the
+message went out — and it is the safe default, which matters most for an OTP: a
+queued code has not reached the user yet, so treating it as sent leaves them
+waiting for a message that never arrived.
+
+Check `queued?` before `failure?` to get the three cases apart:
+
+```ruby
+response = client.send_sms(number: number, message: body, carrier: carrier)
+
+return deliver_later if response.queued?
+raise DeliveryFailed, response.message if response.failure?
+
+confirm_sent
+```
+
+A body the SDK could not parse is a failure too: `code` is `nil`, so `success?`
+is `false`. A gateway error page never reads as a successful send.
 
 The body is normalized on read, whether it arrives as a Hash or as a JSON string,
 and symbol keys are accepted alongside string ones. A body that is not JSON at

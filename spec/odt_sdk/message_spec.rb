@@ -178,6 +178,28 @@ RSpec.describe OdtSdk::Message do
       expect { build(encode: 9).validate! }.to raise_error(ArgumentError, /0, 1, 2/)
     end
 
+    it 'rejects an accent under the default encoding' do
+      expect { build(message: 'Tu código es 123456').validate! }
+        .to raise_error(ArgumentError, /without accents/)
+    end
+
+    it 'points at UCS-2 as the way out' do
+      expect { build(message: 'Tu código es 123456').validate! }
+        .to raise_error(ArgumentError, /UCS2/)
+    end
+
+    it 'rejects an accent under strict GSM' do
+      expect(build(message: 'Tu código', encode: OdtSdk::Encodings::GSM).validate).to be(false)
+    end
+
+    it 'accepts an accent under UCS-2' do
+      expect(build(message: 'Tu código', encode: OdtSdk::Encodings::UCS2).validate).to be(true)
+    end
+
+    it 'accepts OTP copy written without accents' do
+      expect(build(message: 'Tu codigo de verificacion es 123456').validate).to be(true)
+    end
+
     it 'validates before serializing' do
       expect { build(carrier: 99).to_notify }.to raise_error(ArgumentError, /Invalid carrier/)
     end
