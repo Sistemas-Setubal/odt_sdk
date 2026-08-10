@@ -39,21 +39,21 @@ RSpec.describe OdtSdk::Configuration do
 
   describe 'accessors' do
     it 'writes partner_id' do
-      config.partner_id = 'LOCAL_OTP'
+      config.partner_id = 'ODT_OTP'
 
-      expect(config.partner_id).to eq('LOCAL_OTP')
+      expect(config.partner_id).to eq('ODT_OTP')
     end
 
     it 'writes secure_key' do
-      config.secure_key = 'XBYi9RC0'
+      config.secure_key = 'EXAMPLE'
 
-      expect(config.secure_key).to eq('XBYi9RC0')
+      expect(config.secure_key).to eq('EXAMPLE')
     end
 
     it 'writes service_id' do
-      config.service_id = 'OTP_1'
+      config.service_id = 'EXAMPLE_1'
 
-      expect(config.service_id).to eq('OTP_1')
+      expect(config.service_id).to eq('EXAMPLE_1')
     end
 
     it 'writes base_url' do
@@ -75,8 +75,8 @@ RSpec.describe OdtSdk::Configuration do
     end
 
     it 'is true once the credentials are assigned' do
-      config.partner_id = 'LOCAL_OTP'
-      config.secure_key = 'XBYi9RC0'
+      config.partner_id = 'ODT_OTP'
+      config.secure_key = 'EXAMPLE'
 
       expect(config.validate).to be(true)
     end
@@ -88,8 +88,8 @@ RSpec.describe OdtSdk::Configuration do
 
   describe '#validate!' do
     before do
-      config.partner_id = 'LOCAL_OTP'
-      config.secure_key = 'XBYi9RC0'
+      config.partner_id = 'ODT_OTP'
+      config.secure_key = 'EXAMPLE'
     end
 
     it 'returns the configuration when the credentials are present' do
@@ -123,6 +123,17 @@ RSpec.describe OdtSdk::Configuration do
       config.secure_key = '   '
 
       expect { config.validate! }.to raise_error(OdtSdk::ConfigurationError, /secure_key/)
+    end
+  end
+
+  describe '.normalize_timestamp_unit' do
+    it 'returns the unit as a symbol' do
+      expect(described_class.normalize_timestamp_unit('  SECONDS  ')).to eq(:seconds)
+    end
+
+    it 'rejects an unknown unit' do
+      expect { described_class.normalize_timestamp_unit(:fortnights) }
+        .to raise_error(OdtSdk::ConfigurationError, /milliseconds, seconds/)
     end
   end
 

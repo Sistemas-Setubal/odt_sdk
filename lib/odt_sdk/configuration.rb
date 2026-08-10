@@ -9,6 +9,16 @@ module OdtSdk
     DEFAULT_TIMEOUT = 10
     DEFAULT_TIMESTAMP_UNIT = :milliseconds
 
+    def self.normalize_timestamp_unit(value)
+      unit = value.to_s.strip.downcase.to_sym
+
+      return unit if TIMESTAMP_UNITS.include? unit
+
+      raise ConfigurationError,
+            "Unknown timestamp unit #{value.inspect}. " \
+            "Valid units: #{TIMESTAMP_UNITS.join ', '}."
+    end
+
     def initialize
       @settings = {
         partner_id: nil,
@@ -65,15 +75,7 @@ module OdtSdk
     end
 
     def timestamp_unit=(value)
-      unit = value.to_s.strip.downcase.to_sym
-
-      unless TIMESTAMP_UNITS.include? unit
-        raise ConfigurationError,
-              "Unknown timestamp unit #{value.inspect}. " \
-              "Valid units: #{TIMESTAMP_UNITS.join ', '}."
-      end
-
-      @settings[:timestamp_unit] = unit
+      @settings[:timestamp_unit] = self.class.normalize_timestamp_unit value
     end
 
     def validate
