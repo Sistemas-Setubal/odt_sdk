@@ -6,6 +6,15 @@ module OdtSdk
   class Response
     RESULT_KEY = 'result'
 
+    STATUSES = {
+      '0' => :success,
+      '1' => :queued,
+      '2' => :temporary_failure,
+      '101' => :malformed
+    }.freeze
+
+    UNKNOWN_STATUS = :unknown
+
     attr_reader :http_status, :body
 
     def initialize(status:, body:)
@@ -23,6 +32,26 @@ module OdtSdk
 
     def id
       result_field 'id'
+    end
+
+    def status
+      STATUSES.fetch code.to_s, UNKNOWN_STATUS
+    end
+
+    def success?
+      status == :success
+    end
+
+    def queued?
+      status == :queued
+    end
+
+    def retryable?
+      status == :temporary_failure
+    end
+
+    def failure?
+      !success?
     end
 
     def result

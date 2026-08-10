@@ -25,13 +25,27 @@ module OdtSdk
       request notify: sms.to_notify
     end
 
+    def send_sms!(**fields)
+      ensure_sent send_sms(**fields)
+    end
+
     def request(payload)
       reply = transport.post send_url, payload.merge(security: security.build)
 
       Response.new status: reply[:status], body: reply[:body]
     end
 
+    def request!(payload)
+      ensure_sent request(payload)
+    end
+
     private
+
+    def ensure_sent(response)
+      raise ApiError, response if response.failure?
+
+      response
+    end
 
     def security
       @security ||= Security.new configuration

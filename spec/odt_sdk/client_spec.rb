@@ -181,6 +181,78 @@ RSpec.describe OdtSdk::Client do
     end
   end
 
+  describe '#send_sms!' do
+    subject(:client) { described_class.new configuration, transport: failing_transport }
+
+    let :failing_transport do
+      Class.new do
+        attr_reader :requests
+
+        def initialize
+          @requests = []
+        end
+
+        def post(url, payload)
+          @requests << { url: url, payload: payload }
+
+          { status: 200, body: { 'result' => { 'code' => '101', 'message' => 'malformed' } } }
+        end
+      end.new
+    end
+
+    def send_it!
+      client.send_sms! number: '5500000010', message: 'Tu codigo es 123456',
+                       carrier: 1, service_id: 'EXAMPLE_1'
+    end
+
+    it 'raises on a failing code' do
+      expect { send_it! }.to raise_error(OdtSdk::ApiError)
+    end
+
+    it 'is a rescuable OdtSdk::Error' do
+      expect { send_it! }.to raise_error(OdtSdk::Error)
+    end
+
+    it 'names the code in the message' do
+      expect { send_it! }.to raise_error(OdtSdk::ApiError, /101/)
+    end
+
+    it 'carries the code' do
+      expect { send_it! }.to raise_error(an_object_having_attributes(code: '101'))
+    end
+
+    it 'carries the api message' do
+      expect { send_it! }.to raise_error(an_object_having_attributes(api_message: 'malformed'))
+    end
+
+    it 'carries the whole response' do
+      expect { send_it! }.to raise_error(an_object_having_attributes(response: be_a(OdtSdk::Response)))
+    end
+
+    it 'still sent the request' do
+      expect { send_it! }.to raise_error(OdtSdk::ApiError)
+        .and(change { failing_transport.requests.size }.by(1))
+    end
+  end
+
+  describe '#send_sms! on success' do
+    before { configuration.service_id = 'EXAMPLE_1' }
+
+    it 'returns the Response' do
+      expect(client.send_sms!(number: '5500000010', message: 'hola', carrier: 1)).to be_a(OdtSdk::Response)
+    end
+
+    it 'does not raise' do
+      expect { client.send_sms! number: '5500000010', message: 'hola', carrier: 1 }.not_to raise_error
+    end
+  end
+
+  describe '#request!' do
+    it 'returns the Response on success' do
+      expect(client.request!(notify)).to be_a(OdtSdk::Response)
+    end
+  end
+
   describe '#request' do
     it 'posts to the send url' do
       client.request notify
