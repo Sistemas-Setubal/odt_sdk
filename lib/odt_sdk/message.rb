@@ -2,17 +2,94 @@
 
 module OdtSdk
   class Message
-    attr_reader :service_id, :number, :carrier, :message
+    REQUIRED_FIELDS = %i[service_id number carrier message].freeze
+    FIELDS = (REQUIRED_FIELDS + %i[encode]).freeze
 
-    def initialize(service_id:, number:, carrier:, message:)
-      @service_id = service_id
-      @number = number
-      @carrier = carrier
-      @message = message
+    NUMBER_FORMAT = /\A\d{10}\z/
+
+    def initialize(**fields)
+      @fields = fields
+
+      validate_keys
+    end
+
+    def service_id
+      @fields[:service_id]
+    end
+
+    def number
+      @fields[:number]
+    end
+
+    def carrier
+      @fields[:carrier]
+    end
+
+    def message
+      @fields[:message]
+    end
+
+    def encode
+      @fields[:encode]
+    end
+
+    def validate
+      validation_error.nil?
+    end
+
+    def validate!
+      error = validation_error
+
+      raise ArgumentError, error if error
+
+      self
     end
 
     def to_notify
-      { service_id: service_id.to_s, number: number.to_s, carrier: carrier.to_s, message: message.to_s }
+      validate!
+
+      { service_id: service_id.to_s, number: number.to_s, carrier: carrier.to_s,
+        message: message.to_s, encode: encode&.to_s }.compact
+    end
+
+    private
+
+    def validate_keys
+      given = @fields.keys
+      unknown = given - FIELDS
+
+      raise ArgumentError, "unknown keyword: #{unknown.join ', '}" unless unknown.empty?
+
+      missing = REQUIRED_FIELDS - given
+
+      raise ArgumentError, "missing keyword: #{missing.join ', '}" unless missing.empty?
+    end
+
+    def validation_error
+      return 'service_id is required.' if service_id.to_s.strip.empty?
+      return 'message cannot be empty.' if message.to_s.strip.empty?
+
+      invalid_value_error
+    end
+
+    def invalid_value_error
+      return number_error unless number.to_s.match? NUMBER_FORMAT
+      return carrier_error unless Carriers.valid? carrier
+      return encode_error unless encode.nil? || Encodings.valid?(encode)
+
+      nil
+    end
+
+    def number_error
+      "Invalid number #{number.inspect}. ODT expects an MSISDN of 10 digits."
+    end
+
+    def carrier_error
+      "Invalid carrier #{carrier.inspect}. Valid carriers: #{Carriers::ALL.join ', '}."
+    end
+
+    def encode_error
+      "Invalid encode #{encode.inspect}. Valid encodings: #{Encodings::ALL.join ', '}."
     end
   end
 end
