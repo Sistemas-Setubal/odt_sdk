@@ -19,6 +19,12 @@ module OdtSdk
       "#{configuration.base_url.to_s.chomp '/'}#{SEND_PATH}"
     end
 
+    def send_sms(**fields)
+      sms = Message.new(**{ service_id: configuration.service_id }.merge(fields))
+
+      request notify: sms.to_notify
+    end
+
     def request(payload)
       reply = transport.post send_url, payload.merge(security: security.build)
 

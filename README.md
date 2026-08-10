@@ -147,18 +147,44 @@ security.build(time: '1679590064554')
 `build` calls `validate!` first, so a configuration missing its credentials
 raises `ConfigurationError` instead of signing with a blank key.
 
-## Client
+## Sending
 
-`OdtSdk::Client` owns the request. Every payload it sends gets a freshly signed
-`security` block merged in, so no caller can send an unsigned — or stale —
-request:
+`OdtSdk::Client#send_sms` is the whole flow in one call — it builds the `notify`
+block, signs the request and parses the reply:
 
 ```ruby
 client = OdtSdk::Client.new(config)
 
+response = client.send_sms(
+  number: '5500000010',
+  message: 'Tu codigo es 123456',
+  carrier: 1
+)
+
+response.code  # => "0"
+```
+
+`service_id` falls back to the one on the configuration; pass it explicitly to
+send through a different one. `number`, `message` and `carrier` are required and
+raise `ArgumentError` when missing — as does any field ODT does not define, so a
+typo fails locally instead of coming back as a `101`.
+
+`encode:` is accepted here too and forwarded to the `notify` block:
+
+```ruby
+client.send_sms(number: '5500000010', message: 'Tu codigo de verificacion es 123456',
+                carrier: OdtSdk::Carriers::TELCEL, encode: OdtSdk::Encodings::UCS2)
+```
+
+`#request` is the lower level entry point, for a payload you assembled yourself:
+
+```ruby
 client.request(notify: message.to_notify)
 # => #<OdtSdk::Response http_status=200 code="0" message="success sms sent" id="1">
 ```
+
+Every payload it sends gets a freshly signed `security` block merged in, so no
+caller can send an unsigned — or stale — request.
 
 The block is built per request, never memoized, because the `hash` is only valid
 for the `time` it was computed with. It is merged last, so a `security` key in
@@ -202,8 +228,85 @@ same in Ruby as it does in the ODT spec. ODT expects every field as a string, so
 `to_notify` stringifies them — a numeric `carrier` or `number` serializes
 correctly either way.
 
-Accented characters are illegal under the default encoding and get replaced.
-Write OTP copy without them ("codigo", "verificacion").
+`service_id`, `number`, `carrier` and `message` are required; a missing one — or
+a field ODT does not define — raises `ArgumentError`.
+
+### Validation
+
+`to_notify` validates before it serializes, so an invalid message never reaches
+the network — it raises `ArgumentError` locally instead of coming back as a `101`
+you have to decode:
+
+```ruby
+OdtSdk::Message.new(..., number: '55 0000 0010').to_notify
+# => ArgumentError: Invalid number "55 0000 0010". ODT expects an MSISDN of 10 digits.
+
+OdtSdk::Message.new(..., carrier: 99).to_notify
+# => ArgumentError: Invalid carrier 99. Valid carriers: 0, 1, 2, 3.
+```
+
+The rules are ODT's: `number` is exactly 10 digits, `carrier` is one of
+`Carriers::ALL`, `encode` — when given — is one of `Encodings::ALL`, and
+`service_id` and `message` cannot be blank.
+
+The number check is strict rather than forgiving — `+525500000010` and
+`55 0000 0010` are both rejected instead of being stripped down to 10 digits.
+Normalizing on your side is a decision about your data; guessing at it here would
+mean sending a number you never wrote.
+
+`validate!` returns the message so it chains, and `validate` answers the same
+question as a boolean without raising:
+
+```ruby
+message.validate   # => false
+message.validate!  # => ArgumentError
+```
+
+### Optional fields
+
+`encode` is optional and is **left out of the payload entirely** when you do not
+pass it, rather than sent empty. ODT answers `101` to an empty field value, so an
+omitted field and a blank one are not the same thing.
+
+```ruby
+OdtSdk::Message.new(
+  service_id: 'EXAMPLE_1',
+  number: '5500000010',
+  carrier: OdtSdk::Carriers::TELCEL,
+  message: 'Tu codigo de verificacion es 123456',
+  encode: OdtSdk::Encodings::UCS2
+).to_notify
+# => { service_id: "EXAMPLE_1", number: "5500000010", carrier: "1",
+#      message: "Tu codigo de verificacion es 123456", encode: "2" }
+```
+
+## Carriers and encodings
+
+The values ODT documents, as constants:
+
+```ruby
+OdtSdk::Carriers::DEFAULT   # => 0, unknown carrier
+OdtSdk::Carriers::TELCEL    # => 1
+OdtSdk::Carriers::MOVISTAR  # => 2
+OdtSdk::Carriers::ATT       # => 3
+
+OdtSdk::Carriers.valid?(1)        # => true
+OdtSdk::Carriers.valid?('telcel') # => false
+```
+
+```ruby
+OdtSdk::Encodings::REPLACING  # => 0, 160 chars, illegal characters replaced
+OdtSdk::Encodings::GSM        # => 1, strict GSM
+OdtSdk::Encodings::UCS2       # => 2, 70 chars, accents and unicode allowed
+```
+
+`valid?` takes the number either way, so `1` and `"1"` both pass — it is the
+same check whether the value came from your code or from a form field. A leading
+zero reads as base ten, so `"010"` is rejected rather than quietly becoming `8`.
+
+Accents are illegal under `REPLACING`, the default, and get replaced. Write OTP
+copy without them ("codigo", "verificacion"). `UCS2` allows them but drops the
+limit to 70 characters.
 
 ## Transport
 

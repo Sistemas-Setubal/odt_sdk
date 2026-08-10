@@ -65,6 +65,122 @@ RSpec.describe OdtSdk::Client do
     end
   end
 
+  describe '#send_sms' do
+    before { configuration.service_id = 'EXAMPLE_1' }
+
+    def send_it(**overrides)
+      client.send_sms(**{ number: '5500000010', message: 'Tu codigo es 123456', carrier: 1 }.merge(overrides))
+    end
+
+    it 'posts to the send url' do
+      send_it
+
+      expect(transport.requests.last[:url]).to eq('https://smsapi.odt.com.mx/sendsms')
+    end
+
+    it 'builds the notify block' do
+      send_it
+
+      expect(sent[:notify]).to eq(service_id: 'EXAMPLE_1', number: '5500000010',
+                                  carrier: '1', message: 'Tu codigo es 123456')
+    end
+
+    it 'signs the request' do
+      send_it
+
+      expect(sent[:security][:partner_id]).to eq('ODT_OTP')
+    end
+
+    it 'falls back to the configured service_id' do
+      send_it
+
+      expect(sent[:notify][:service_id]).to eq('EXAMPLE_1')
+    end
+
+    it 'prefers an explicit service_id over the configured one' do
+      send_it service_id: 'EXAMPLE_2'
+
+      expect(sent[:notify][:service_id]).to eq('EXAMPLE_2')
+    end
+
+    it 'stringifies a numeric carrier' do
+      send_it carrier: 3
+
+      expect(sent[:notify][:carrier]).to eq('3')
+    end
+
+    it 'returns a Response' do
+      expect(send_it).to be_a(OdtSdk::Response)
+    end
+
+    it 'parses the ODT code' do
+      expect(send_it.code).to eq('0')
+    end
+
+    it 'demands a number' do
+      expect { client.send_sms message: 'Tu codigo es 123456', carrier: 1 }
+        .to raise_error(ArgumentError, /number/)
+    end
+
+    it 'demands a message' do
+      expect { client.send_sms number: '5500000010', carrier: 1 }
+        .to raise_error(ArgumentError, /message/)
+    end
+
+    it 'demands a carrier' do
+      expect { client.send_sms number: '5500000010', message: 'Tu codigo es 123456' }
+        .to raise_error(ArgumentError, /carrier/)
+    end
+
+    it 'rejects a field ODT does not know' do
+      expect { send_it sender: 'ODT' }.to raise_error(ArgumentError, /sender/)
+    end
+
+    it 'never reaches the transport with a bad field' do
+      expect { attempt_bad_send }.not_to change(transport.requests, :size)
+    end
+
+    it 'passes the encoding through' do
+      send_it encode: OdtSdk::Encodings::UCS2
+
+      expect(sent[:notify][:encode]).to eq('2')
+    end
+
+    it 'omits the optional fields when they are not given' do
+      send_it
+
+      expect(sent[:notify].keys).to contain_exactly(:service_id, :number, :carrier, :message)
+    end
+
+    it 'rejects a number that is not ten digits' do
+      expect { send_it number: '55' }.to raise_error(ArgumentError, /10 digits/)
+    end
+
+    it 'rejects a carrier ODT does not define' do
+      expect { send_it carrier: 99 }.to raise_error(ArgumentError, /Invalid carrier/)
+    end
+
+    it 'never reaches the transport with an invalid number' do
+      expect { attempt_send number: '55' }.not_to change(transport.requests, :size)
+    end
+
+    it 'never reaches the transport with an invalid carrier' do
+      expect { attempt_send carrier: 99 }.not_to change(transport.requests, :size)
+    end
+
+    def attempt_bad_send
+      send_it sender: 'ODT'
+    rescue ArgumentError
+      nil
+    end
+
+    def attempt_send(**overrides)
+      send_it(**overrides)
+    rescue ArgumentError
+      nil
+    end
+  end
+
   describe '#request' do
     it 'posts to the send url' do
       client.request notify
