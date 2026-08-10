@@ -15,9 +15,9 @@ one and assign what you need:
 require 'odt_sdk'
 
 config = OdtSdk::Configuration.new
-config.partner_id = 'LOCAL_OTP'
+config.partner_id = 'ODT_OTP'
 config.secure_key = 'your-secure-key'
-config.service_id = 'OTP_1'
+config.service_id = 'EXAMPLE_1'
 ```
 
 | Setting          | Required | Default                        | Notes |
@@ -37,7 +37,7 @@ A Rails initializer looks like this:
 ODT_CONFIG = OdtSdk::Configuration.new.tap do |config|
   config.partner_id = Rails.application.credentials.dig(:odt, :partner_id)
   config.secure_key = Rails.application.credentials.dig(:odt, :secure_key)
-  config.service_id = 'OTP_1'
+  config.service_id = 'EXAMPLE_1'
   config.timeout    = 15
 end
 ```
@@ -76,6 +76,33 @@ though its prose says seconds. This is still open with ODT — the request hash
 is computed over the same timestamp string that gets sent, so the wrong unit
 makes every request fail validation on their side.
 
+## Timestamp
+
+`OdtSdk::Security.timestamp` reads the clock and returns the value as a string,
+ready to be sent and hashed:
+
+```ruby
+OdtSdk::Security.timestamp             # => "1679590064554"  (13 digits, ms)
+OdtSdk::Security.timestamp(:seconds)   # => "1679590064"     (10 digits)
+```
+
+The unit defaults to milliseconds and accepts the same two values as
+`timestamp_unit`, with the same normalization and the same
+`ConfigurationError` on anything else:
+
+```ruby
+OdtSdk::Security.timestamp('  SECONDS  ')   # => "1679590064"
+OdtSdk::Security.timestamp(:minutes)
+# => OdtSdk::ConfigurationError: Unknown timestamp unit :minutes.
+#    Valid units: milliseconds, seconds.
+```
+
+Pass your configuration's unit to keep both in step:
+
+```ruby
+OdtSdk::Security.timestamp(config.timestamp_unit)
+```
+
 ## Request hash
 
 Every ODT request carries a `security` block signed with MD5 over
@@ -84,16 +111,41 @@ Every ODT request carries a `security` block signed with MD5 over
 
 ```ruby
 OdtSdk::Security.hash_for(
-  partner_id: 'EXAMPLE_PARTNER_ID',
+  partner_id: 'ODT_OTP',
   time: '1679590064554',
-  secure_key: 'EXAMPLE_SECURE_KEY'
+  secure_key: 'EXAMPLE'
 )
-# => "EXAMPLE_HASHING_VALUE"
+# => "3fed04095f9a9b1024e426b1446ddc7f"
 ```
 
 The `secure_key` only feeds the digest — it never travels in the payload. The
 `time` must be the very same string that goes out in the request, so generate
 both together rather than reading the clock twice.
+
+## Security block
+
+`OdtSdk::Security#build` does exactly that: it takes a configuration, reads the
+clock once and returns the block every ODT request carries.
+
+```ruby
+security = OdtSdk::Security.new(config)
+
+security.build
+# => { partner_id: "ODT_OTP",
+#      time: "1679590064554",
+#      hash: "3fed04095f9a9b1024e426b1446ddc7f" }
+```
+
+The `time` follows the configuration's `timestamp_unit`, and the `hash` is
+always computed over the `time` in the same block. Pass `time:` to pin it —
+useful in tests and when replaying a request:
+
+```ruby
+security.build(time: '1679590064554')
+```
+
+`build` calls `validate!` first, so a configuration missing its credentials
+raises `ConfigurationError` instead of signing with a blank key.
 
 ## Development
 
