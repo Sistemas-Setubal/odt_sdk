@@ -4,4 +4,6 @@ module OdtSdk
   class Error < StandardError; end
 
   class ConfigurationError < Error; end
+
+  class TransportError < Error; end
 end

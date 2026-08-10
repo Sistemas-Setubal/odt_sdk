@@ -147,6 +147,137 @@ security.build(time: '1679590064554')
 `build` calls `validate!` first, so a configuration missing its credentials
 raises `ConfigurationError` instead of signing with a blank key.
 
+## Client
+
+`OdtSdk::Client` owns the request. Every payload it sends gets a freshly signed
+`security` block merged in, so no caller can send an unsigned — or stale —
+request:
+
+```ruby
+client = OdtSdk::Client.new(config)
+
+client.request(notify: message.to_notify)
+# => #<OdtSdk::Response http_status=200 code="0" message="success sms sent" id="1">
+```
+
+The block is built per request, never memoized, because the `hash` is only valid
+for the `time` it was computed with. It is merged last, so a `security` key in
+the caller's payload is replaced rather than honoured. And `Security#build` runs
+`validate!` first — a configuration missing credentials raises
+`ConfigurationError` before the transport is ever touched.
+
+`send_url` derives from the configured `base_url`:
+
+```ruby
+client.send_url  # => "https://smsapi.odt.com.mx/sendsms"
+```
+
+The transport defaults to `Transport::HttpParty`, built lazily on first use with
+the configured timeout, so HTTParty is never loaded in a process that injects its
+own transport:
+
+```ruby
+OdtSdk::Client.new(config, transport: fake)
+```
+
+## Notify block
+
+The other half of every send is the `notify` block. `OdtSdk::Message` holds the
+four fields ODT requires and serializes them:
+
+```ruby
+message = OdtSdk::Message.new(
+  service_id: 'EXAMPLE_1',
+  number: '5500000010',
+  carrier: 1,
+  message: 'Tu codigo es 123456'
+)
+
+message.to_notify
+# => { service_id: "EXAMPLE_1", number: "5500000010", carrier: "1", message: "Tu codigo es 123456" }
+```
+
+The keyword names match the manual's field names exactly, so the block reads the
+same in Ruby as it does in the ODT spec. ODT expects every field as a string, so
+`to_notify` stringifies them — a numeric `carrier` or `number` serializes
+correctly either way.
+
+Accented characters are illegal under the default encoding and get replaced.
+Write OTP copy without them ("codigo", "verificacion").
+
+## Transport
+
+HTTP lives behind a transport: any object responding to `#post(url, payload)`
+and returning `{ status:, body: }`. `OdtSdk::Transport::HttpParty` is the real
+one, a JSON POST over HTTParty.
+
+```ruby
+transport = OdtSdk::Transport::HttpParty.new(timeout: config.timeout)
+
+transport.post('https://smsapi.odt.com.mx/sendsms', security: {}, notify: {})
+# => { status: 200, body: { "result" => { "code" => "0", "message" => "success", "id" => "1" } } }
+```
+
+The payload is serialized with `JSON.generate` and sent with
+`Content-Type: application/json` and `Accept: application/json`. `status` is the
+HTTP status; `body` is HTTParty's parsed response — a Hash for JSON replies, the
+raw String otherwise.
+
+`require "httparty"` lives inside that file alone, and Zeitwerk only loads it
+when the constant is first referenced. Everything else in the SDK loads and runs
+without HTTParty present.
+
+Network failures — timeouts, DNS, refused connections, TLS, HTTParty's own
+errors — are wrapped in `OdtSdk::TransportError` naming the url and the
+underlying cause, so callers rescue one SDK error instead of the HTTP stack:
+
+```ruby
+transport.post(url, payload)
+# => OdtSdk::TransportError: POST https://smsapi.odt.com.mx/sendsms failed:
+#    SocketError: getaddrinfo failed
+```
+
+Swap in your own object to test without the network:
+
+```ruby
+fake = Object.new
+def fake.post(url, payload) = { status: 200, body: { 'result' => { 'code' => '0' } } }
+```
+
+## Response
+
+`Client#request` returns an `OdtSdk::Response` instead of the transport's raw
+hash, so `result` is read once and read safely:
+
+```ruby
+response = client.request(notify: message.to_notify)
+
+response.http_status  # => 200
+response.code         # => "0"
+response.message      # => "success sms sent"
+response.id           # => "1"
+```
+
+`code` is what decides the outcome, not the HTTP status: `"0"` is success, `"1"`
+queued, `"2"` a retryable temporary failure, `"101"` malformed. ODT answers `200`
+for all of them.
+
+The body is normalized on read, whether it arrives as a Hash or as a JSON string,
+and symbol keys are accepted alongside string ones. A body that is not JSON at
+all — an HTML error page from a proxy, an empty body on a gateway timeout — never
+raises: `code`, `message` and `id` come back `nil` and `result` is `{}`.
+
+```ruby
+response = OdtSdk::Response.new(status: 502, body: '<html>502 Bad Gateway</html>')
+
+response.code         # => nil
+response.http_status  # => 502
+response.body         # => "<html>502 Bad Gateway</html>"
+```
+
+`body` always holds the untouched original, so a response the SDK could not make
+sense of is still there to log.
+
 ## Development
 
 ```bash
