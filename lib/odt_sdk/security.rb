@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'digest'
+require 'openssl'
 
 module OdtSdk
   class Security
@@ -14,6 +15,11 @@ module OdtSdk
 
     def self.hash_for(partner_id:, time:, secure_key:)
       Digest::MD5.hexdigest "#{partner_id}#{time}#{secure_key}"
+    end
+
+    def self.secure_compare(left, right)
+      OpenSSL.fixed_length_secure_compare Digest::SHA256.digest(left.to_s),
+                                          Digest::SHA256.digest(right.to_s)
     end
 
     attr_reader :configuration

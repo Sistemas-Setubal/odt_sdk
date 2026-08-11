@@ -107,6 +107,60 @@ RSpec.describe OdtSdk::Security do
     end
   end
 
+  describe '.secure_compare' do
+    it 'accepts two identical codes' do
+      expect(described_class.secure_compare('0473', '0473')).to be(true)
+    end
+
+    it 'rejects two different codes of the same length' do
+      expect(described_class.secure_compare('0473', '0474')).to be(false)
+    end
+
+    it 'rejects codes that differ only in the first digit' do
+      expect(described_class.secure_compare('0473', '1473')).to be(false)
+    end
+
+    it 'rejects codes that differ only in the last digit' do
+      expect(described_class.secure_compare('0473', '0472')).to be(false)
+    end
+
+    it 'rejects a shorter guess without raising on the length difference' do
+      expect(described_class.secure_compare('0473', '04')).to be(false)
+    end
+
+    it 'rejects a longer guess without raising on the length difference' do
+      expect(described_class.secure_compare('0473', '047300')).to be(false)
+    end
+
+    it 'rejects an empty guess' do
+      expect(described_class.secure_compare('0473', '')).to be(false)
+    end
+
+    it 'rejects a nil guess' do
+      expect(described_class.secure_compare('0473', nil)).to be(false)
+    end
+
+    it 'keeps a padded code distinct from its unpadded form' do
+      expect(described_class.secure_compare('0007', '7')).to be(false)
+    end
+
+    it 'compares a numeric guess by its string form' do
+      expect(described_class.secure_compare('1234', 1234)).to be(true)
+    end
+
+    it 'never falls back to a length check that short circuits' do
+      expect { described_class.secure_compare('a', 'a' * 10_000) }.not_to raise_error
+    end
+
+    it 'hashes both sides so the digests it compares are the same length' do
+      sizes = []
+      allow(OpenSSL).to receive(:fixed_length_secure_compare) { |*digests| sizes = digests.map(&:bytesize) }
+      described_class.secure_compare 'a', 'a' * 100
+
+      expect(sizes).to eq([32, 32])
+    end
+  end
+
   describe '.hash_for' do
     subject :hash do
       described_class.hash_for partner_id: 'ODT_OTP', time: '1679590064554', secure_key: 'EXAMPLE'

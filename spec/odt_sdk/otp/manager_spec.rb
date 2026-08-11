@@ -191,6 +191,347 @@ RSpec.describe OdtSdk::Otp::Manager do
     end
   end
 
+  describe '#verify' do
+    def stored_code
+      manager.store.read(number).code
+    end
+
+    it 'accepts the code that was sent' do
+      send_it
+
+      expect(manager.verify(number: number, code: stored_code)).to be_ok
+    end
+
+    it 'names that reason ok' do
+      send_it
+
+      expect(manager.verify(number: number, code: stored_code).reason).to eq(:ok)
+    end
+
+    it 'rejects a different code' do
+      send_it
+
+      expect(manager.verify(number: number, code: '9999').reason).to eq(:mismatch)
+    end
+
+    it 'rejects the right code for a different number' do
+      send_it
+
+      expect(manager.verify(number: '5500000011', code: stored_code).reason).to eq(:not_found)
+    end
+
+    it 'reports a number that never asked for a code' do
+      expect(manager.verify(number: number, code: '0473').reason).to eq(:not_found)
+    end
+
+    it 'rejects an unpadded guess for a padded code' do
+      send_it
+      allow(manager.store).to receive(:read).and_return(OdtSdk::Otp::Entry.new(code: '0007',
+                                                                              expires_at: Time.now + 300))
+
+      expect(manager.verify(number: number, code: '7').reason).to eq(:mismatch)
+    end
+  end
+
+  describe '#valid?' do
+    def stored_code
+      manager.store.read(number).code
+    end
+
+    it 'is true for the code that was sent' do
+      send_it
+
+      expect(manager.valid?(number: number, code: stored_code)).to be(true)
+    end
+
+    it 'is false for a wrong code' do
+      send_it
+
+      expect(manager.valid?(number: number, code: '9999')).to be(false)
+    end
+
+    it 'is false when nothing was sent' do
+      expect(manager.valid?(number: number, code: '0473')).to be(false)
+    end
+
+    it 'is false once the ttl has passed' do
+      now = Time.now
+      allow(Time).to receive(:now).and_return(now)
+      send_it
+      code = stored_code
+      allow(Time).to receive(:now).and_return(now + 301)
+
+      expect(manager.valid?(number: number, code: code)).to be(false)
+    end
+
+    it 'is false once the attempts are spent' do
+      send_it
+      code = stored_code
+      3.times { manager.valid? number: number, code: '9999' }
+
+      expect(manager.valid?(number: number, code: code)).to be(false)
+    end
+
+    it 'answers with a plain boolean, not a Result' do
+      send_it
+
+      expect(manager.valid?(number: number, code: '9999')).to be_a(FalseClass)
+    end
+
+    it 'consumes the code just as verify does' do
+      send_it
+      code = stored_code
+      manager.valid? number: number, code: code
+
+      expect(manager.valid?(number: number, code: code)).to be(false)
+    end
+
+    it 'counts a wrong guess just as verify does' do
+      send_it
+      manager.valid? number: number, code: '9999'
+
+      expect(manager.store.read(number).attempts).to eq(1)
+    end
+  end
+
+  describe '#verify consumes the code' do
+    def stored_code
+      manager.store.read(number).code
+    end
+
+    it 'forgets the code once it has been accepted' do
+      send_it
+      manager.verify number: number, code: stored_code
+
+      expect(manager.store.read(number)).to be_nil
+    end
+
+    it 'refuses the same code a second time' do
+      send_it
+      code = stored_code
+      manager.verify number: number, code: code
+
+      expect(manager.verify(number: number, code: code).reason).to eq(:not_found)
+    end
+
+    it 'is not ok the second time' do
+      send_it
+      code = stored_code
+      manager.verify number: number, code: code
+
+      expect(manager.verify(number: number, code: code)).not_to be_ok
+    end
+
+    it 'keeps the code after a wrong guess' do
+      send_it
+      manager.verify number: number, code: '9999'
+
+      expect(manager.store.read(number)).not_to be_nil
+    end
+
+    it 'keeps the code after a lockout, so the reason stays too_many_attempts' do
+      send_it
+      4.times { manager.verify number: number, code: '9999' }
+
+      expect(manager.verify(number: number, code: '9999').reason).to eq(:too_many_attempts)
+    end
+
+    it 'leaves other numbers alone' do
+      send_it
+      manager.send_code number: '5500000011', carrier: 1
+      other = manager.store.read('5500000011').code
+      manager.verify number: number, code: stored_code
+
+      expect(manager.store.read('5500000011').code).to eq(other)
+    end
+
+    it 'lets a fresh code be sent and accepted after one was consumed' do
+      send_it
+      manager.verify number: number, code: stored_code
+      send_it
+
+      expect(manager.verify(number: number, code: stored_code)).to be_ok
+    end
+  end
+
+  describe '#verify keeps expired codes readable' do
+    it 'does not consume an expired code, so it keeps reporting expired' do
+      now = Time.now
+      allow(Time).to receive(:now).and_return(now)
+      send_it
+      code = manager.store.read(number).code
+      allow(Time).to receive(:now).and_return(now + 301)
+      manager.verify number: number, code: code
+
+      expect(manager.verify(number: number, code: code).reason).to eq(:expired)
+    end
+  end
+
+  describe '#verify attempt limit' do
+    def stored_code
+      manager.store.read(number).code
+    end
+
+    def guess_wrong(times)
+      times.times { manager.verify number: number, code: '9999' }
+    end
+
+    it 'allows three guesses by default' do
+      expect(manager.max_attempts).to eq(3)
+    end
+
+    it 'names that default in a constant' do
+      expect(described_class::DEFAULT_MAX_ATTEMPTS).to eq(3)
+    end
+
+    it 'still reports a mismatch on the third wrong guess' do
+      send_it
+      guess_wrong 2
+
+      expect(manager.verify(number: number, code: '9999').reason).to eq(:mismatch)
+    end
+
+    it 'locks out on the fourth guess' do
+      send_it
+      guess_wrong 3
+
+      expect(manager.verify(number: number, code: '9999').reason).to eq(:too_many_attempts)
+    end
+
+    it 'refuses even the right code once locked out' do
+      send_it
+      code = stored_code
+      guess_wrong 3
+
+      expect(manager.verify(number: number, code: code).reason).to eq(:too_many_attempts)
+    end
+
+    it 'stays locked out on later tries' do
+      send_it
+      guess_wrong 5
+
+      expect(manager.verify(number: number, code: '9999').reason).to eq(:too_many_attempts)
+    end
+
+    it 'counts a wrong guess' do
+      send_it
+      guess_wrong 1
+
+      expect(manager.store.read(number).attempts).to eq(1)
+    end
+
+    it 'stops counting once locked out, so the counter cannot run away' do
+      send_it
+      guess_wrong 10
+
+      expect(manager.store.read(number).attempts).to eq(3)
+    end
+
+    it 'still accepts the right code after two wrong ones' do
+      send_it
+      code = stored_code
+      guess_wrong 2
+
+      expect(manager.verify(number: number, code: code)).to be_ok
+    end
+
+    it 'keeps the count per number' do
+      send_it
+      guess_wrong 3
+      manager.send_code number: '5500000011', carrier: 1
+
+      expect(manager.verify(number: '5500000011', code: '9999').reason).to eq(:mismatch)
+    end
+
+    it 'clears the count when a new code is sent' do
+      send_it
+      guess_wrong 3
+      send_it
+
+      expect(manager.verify(number: number, code: '9999').reason).to eq(:mismatch)
+    end
+
+    it 'checks the limit before comparing, so a lockout leaks nothing about the code' do
+      send_it
+      code = stored_code
+      guess_wrong 3
+      allow(OdtSdk::Security).to receive(:secure_compare)
+      manager.verify number: number, code: code
+
+      expect(OdtSdk::Security).not_to have_received(:secure_compare)
+    end
+
+    it 'honours a custom limit' do
+      manager = described_class.new client, max_attempts: 1
+      manager.send_code number: number, carrier: 1
+      manager.verify number: number, code: '9999'
+
+      expect(manager.verify(number: number, code: '9999').reason).to eq(:too_many_attempts)
+    end
+
+    it 'refuses a limit of zero, which would lock every code out' do
+      expect { described_class.new(client, max_attempts: 0).max_attempts }
+        .to raise_error(ArgumentError, /positive integer/)
+    end
+
+    it 'refuses a limit that is not an integer' do
+      expect { described_class.new(client, max_attempts: '3').max_attempts }
+        .to raise_error(ArgumentError, /"3"/)
+    end
+  end
+
+  describe '#verify once the ttl has passed' do
+    def send_and_age(seconds)
+      now = Time.now
+      allow(Time).to receive(:now).and_return(now)
+      send_it
+      code = manager.store.read(number).code
+      allow(Time).to receive(:now).and_return(now + seconds)
+
+      code
+    end
+
+    it 'still accepts the code one second before it expires' do
+      code = send_and_age 299
+
+      expect(manager.verify(number: number, code: code)).to be_ok
+    end
+
+    it 'refuses the code once the ttl has passed' do
+      code = send_and_age 301
+
+      expect(manager.verify(number: number, code: code).reason).to eq(:expired)
+    end
+
+    it 'refuses it exactly at the ttl boundary' do
+      code = send_and_age 300
+
+      expect(manager.verify(number: number, code: code).reason).to eq(:expired)
+    end
+
+    it 'tells expiry apart from never having asked for a code' do
+      send_and_age 301
+
+      expect(manager.verify(number: number, code: '9999').reason).to eq(:expired)
+    end
+
+    it 'checks expiry before comparing, so a wrong guess on a dead code also reads expired' do
+      send_and_age 301
+
+      expect(manager.verify(number: number, code: 'whatever').reason).to eq(:expired)
+    end
+
+    it 'honours a custom ttl' do
+      manager = described_class.new client, ttl: 60
+      now = Time.now
+      allow(Time).to receive(:now).and_return(now)
+      manager.send_code number: number, carrier: 1
+      allow(Time).to receive(:now).and_return(now + 61)
+
+      expect(manager.verify(number: number, code: '9999').reason).to eq(:expired)
+    end
+  end
+
   describe '#send_code when the send is refused locally' do
     it 'refuses a number that is not ten digits' do
       expect { send_it number: '55' }.to raise_error(ArgumentError, /10 digits/)

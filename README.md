@@ -122,6 +122,38 @@ The `secure_key` only feeds the digest — it never travels in the payload. The
 `time` must be the very same string that goes out in the request, so generate
 both together rather than reading the clock twice.
 
+## Constant-time comparison
+
+`OdtSdk::Security.secure_compare` compares two secrets without leaking, through
+timing, how much of one matched:
+
+```ruby
+OdtSdk::Security.secure_compare('0473', '0473')  # => true
+OdtSdk::Security.secure_compare('0473', '1473')  # => false
+```
+
+Use it for OTP codes and request hashes — anything an attacker gets to guess at
+repeatedly. Ruby's `==` returns as soon as it finds a differing byte, so a wrong
+guess that shares a prefix takes measurably longer to reject than one that
+differs immediately. Over enough attempts that difference recovers the secret one
+character at a time.
+
+Both sides are hashed with SHA-256 before comparing. That is not for secrecy — it
+is what makes the two inputs the same length, since
+`OpenSSL.fixed_length_secure_compare` raises on mismatched lengths, and a length
+check before comparing would leak the length itself.
+
+Measured over 300k comparisons against `"0473"`:
+
+| Guess | `secure_compare` | `==` |
+|---|---|---|
+| differs at the first digit | 1253 ns | 35 ns |
+| differs at the last digit  | 1252 ns | 35 ns |
+| identical                  | 1249 ns | 35 ns |
+
+`==` is far faster, and that is exactly the problem: it is fast in a way that
+depends on the secret. `secure_compare` costs about 1.2 µs whatever you feed it.
+
 ## Security block
 
 `OdtSdk::Security#build` does exactly that: it takes a configuration, reads the
@@ -648,6 +680,83 @@ is left behind for a message that never left the process.
 A send that ODT rejects keeps the stored code. It expires on its own, and a `"1"`
 means the SMS may still arrive, so deleting it would break the verification that
 follows.
+
+### Verifying a code
+
+`verify` answers with a reason, not just a boolean:
+
+```ruby
+result = manager.verify(number: '5500000010', code: params[:code])
+
+result.ok?     # => true
+result.reason  # => :ok
+```
+
+| `reason` | What happened |
+|---|---|
+| `:ok` | The code matches and is still live. |
+| `:mismatch` | Wrong code. |
+| `:expired` | The code was right or wrong, but its TTL had already passed. |
+| `:too_many_attempts` | The guess limit for that code is spent. |
+| `:not_found` | No code stored for that number — never sent, or already swept. |
+
+**Expiry is checked before the code is compared.** A dead code reads `:expired`
+whatever the user typed, so verification never reveals that an expired guess
+happened to be correct. It also keeps `:expired` distinct from `:not_found`,
+which is the difference between "ask for a new code" and "start over" in your UI.
+
+The comparison itself goes through
+[`Security.secure_compare`](#constant-time-comparison), so a near-miss guess
+takes the same time to reject as a wildly wrong one.
+
+#### Attempt limit
+
+Three wrong guesses spend a code. The fourth call gets `:too_many_attempts`, and
+so does every one after it — including one carrying the right code:
+
+```ruby
+OdtSdk::Otp::Manager.new(client, max_attempts: 5)
+```
+
+This is what makes a short code safe. A 4-digit code is 10,000 possibilities; the
+limit is the only thing standing between that and an attacker walking the whole
+space. Lengthening the code helps far less than capping the guesses.
+
+Only wrong guesses count. A correct one leaves the counter alone, and the counter
+stops at the limit rather than climbing forever. Sending a new code resets it, and
+counts are kept per number.
+
+The limit is checked **before** the comparison runs, so a locked-out request never
+touches the stored code at all — there is nothing to time and nothing to learn.
+
+#### One use only
+
+A code is consumed the moment it is accepted. Verifying the same code twice gives
+`:ok` and then `:not_found`:
+
+```ruby
+manager.verify(number: '5500000010', code: '0473').reason  # => :ok
+manager.verify(number: '5500000010', code: '0473').reason  # => :not_found
+```
+
+Only success consumes. A wrong guess, a lockout and an expired code all leave the
+entry in place — a consumed lockout would come back as `:not_found` and quietly
+hand the attacker a fresh set of guesses, and a consumed expired code would lose
+the distinction that tells your UI to offer a new one.
+
+#### `valid?`
+
+When you only need a yes or no:
+
+```ruby
+manager.valid?(number: '5500000010', code: params[:code])  # => true
+```
+
+It is `verify(...).ok?` and nothing more, which means **it is not a free
+look**: it spends an attempt on a wrong code and consumes the code on a right
+one, exactly as `verify` does. Calling it twice with the same correct code
+returns `true` then `false`. Reach for `verify` when you need to tell the user
+*why* it failed — expired and locked out call for different messages.
 
 ## Development
 
