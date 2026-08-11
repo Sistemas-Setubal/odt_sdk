@@ -200,6 +200,27 @@ RSpec.describe OdtSdk::Message do
       expect(build(message: 'Tu codigo de verificacion es 123456').validate).to be(true)
     end
 
+    it 'accepts a message at the 160 character limit' do
+      expect(build(message: 'a' * 160).validate).to be(true)
+    end
+
+    it 'rejects a message over the 160 character limit' do
+      expect { build(message: 'a' * 161).validate! }.to raise_error(ArgumentError, /over the 160/)
+    end
+
+    it 'reports how long the message actually is' do
+      expect { build(message: 'a' * 200).validate! }.to raise_error(ArgumentError, /200 characters/)
+    end
+
+    it 'drops the limit to 70 under UCS-2' do
+      expect { build(message: 'a' * 71, encode: OdtSdk::Encodings::UCS2).validate! }
+        .to raise_error(ArgumentError, /over the 70/)
+    end
+
+    it 'accepts a UCS-2 message within its lower limit' do
+      expect(build(message: 'á' * 70, encode: OdtSdk::Encodings::UCS2).validate).to be(true)
+    end
+
     it 'validates before serializing' do
       expect { build(carrier: 99).to_notify }.to raise_error(ArgumentError, /Invalid carrier/)
     end
