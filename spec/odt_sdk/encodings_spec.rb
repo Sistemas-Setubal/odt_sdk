@@ -51,6 +51,50 @@ RSpec.describe OdtSdk::Encodings do
     end
   end
 
+  describe '.limit' do
+    it 'allows 160 characters under the default encoding' do
+      expect(described_class.limit(described_class::REPLACING)).to eq(160)
+    end
+
+    it 'allows 160 characters under strict GSM' do
+      expect(described_class.limit(described_class::GSM)).to eq(160)
+    end
+
+    it 'drops to 70 characters under UCS-2' do
+      expect(described_class.limit(described_class::UCS2)).to eq(70)
+    end
+
+    it 'treats a missing encoding as the default' do
+      expect(described_class.limit(nil)).to eq(160)
+    end
+  end
+
+  describe '.fits?' do
+    it 'accepts a message at the limit' do
+      expect(described_class).to be_fits('a' * 160, described_class::REPLACING)
+    end
+
+    it 'rejects a message one character over' do
+      expect(described_class).not_to be_fits('a' * 161, described_class::REPLACING)
+    end
+
+    it 'accepts a UCS-2 message at its lower limit' do
+      expect(described_class).to be_fits('a' * 70, described_class::UCS2)
+    end
+
+    it 'rejects a UCS-2 message over its lower limit' do
+      expect(described_class).not_to be_fits('a' * 71, described_class::UCS2)
+    end
+
+    it 'counts characters rather than bytes under UCS-2' do
+      expect(described_class).to be_fits('á' * 70, described_class::UCS2)
+    end
+
+    it 'accepts an empty message' do
+      expect(described_class).to be_fits('', described_class::REPLACING)
+    end
+  end
+
   describe '.supports?' do
     it 'accepts plain text under the default encoding' do
       expect(described_class).to be_supports('Tu codigo es 123456', described_class::REPLACING)

@@ -7,7 +7,7 @@ module OdtSdk
 
     NUMBER_FORMAT = /\A\d{10}\z/
 
-    ENCODING_ERROR = 'message carries characters this encoding replaces. ' \
+    UNSUPPORTED_CHARACTERS = 'message carries characters this encoding replaces. ' \
                      'Write it without accents, or send it with Encodings::UCS2.'
 
     def initialize(**fields)
@@ -78,8 +78,14 @@ module OdtSdk
     def invalid_value_error
       return number_error unless number.to_s.match? NUMBER_FORMAT
       return carrier_error unless Carriers.valid? carrier
-      return encode_error unless encode.nil? || Encodings.valid?(encode)
-      return ENCODING_ERROR unless Encodings.supports? message, encode
+
+      encoding_error
+    end
+
+    def encoding_error
+      return Encodings.invalid_error encode unless encode.nil? || Encodings.valid?(encode)
+      return UNSUPPORTED_CHARACTERS unless Encodings.supports? message, encode
+      return Encodings.limit_error message, encode unless Encodings.fits? message, encode
 
       nil
     end
@@ -90,10 +96,6 @@ module OdtSdk
 
     def carrier_error
       "Invalid carrier #{carrier.inspect}. Valid carriers: #{Carriers::ALL.join ', '}."
-    end
-
-    def encode_error
-      "Invalid encode #{encode.inspect}. Valid encodings: #{Encodings::ALL.join ', '}."
     end
   end
 end

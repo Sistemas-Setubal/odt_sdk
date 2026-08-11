@@ -274,7 +274,19 @@ OdtSdk::Message.new(..., carrier: 99).to_notify
 
 The rules are ODT's: `number` is exactly 10 digits, `carrier` is one of
 `Carriers::ALL`, `encode` — when given — is one of `Encodings::ALL`, and
-`service_id` and `message` cannot be blank.
+`service_id` and `message` cannot be blank. The message must also fit the
+encoding's character limit:
+
+```ruby
+OdtSdk::Message.new(..., message: 'a' * 161).to_notify
+# => ArgumentError: message is 161 characters, over the 160 this encoding allows.
+#    Shorten it, and note UCS-2 only allows 70.
+```
+
+160 characters under `REPLACING` and `GSM`, 70 under `UCS2`. The SDK refuses an
+over-long message rather than letting ODT decide — the manual does not say
+whether it truncates or rejects, and a truncated OTP is one whose code got cut
+off the end.
 
 The number check is strict rather than forgiving — `+525500000010` and
 `55 0000 0010` are both rejected instead of being stripped down to 10 digits.
@@ -485,6 +497,157 @@ response.body         # => "<html>502 Bad Gateway</html>"
 
 `body` always holds the untouched original, so a response the SDK could not make
 sense of is still there to log.
+
+## OTP codes
+
+`OdtSdk::Otp::Generator.numeric` draws a code with `SecureRandom`:
+
+```ruby
+OdtSdk::Otp::Generator.numeric     # => "0473"
+OdtSdk::Otp::Generator.numeric(6)  # => "051829"
+```
+
+The default is **4 digits**. The result is always a String of exactly that
+length — a draw of `7` comes back as `"0007"`, never `"7"`. That matters because
+the code is compared against what the user typed, and `"0007" != "7"`.
+
+`SecureRandom` rather than `rand`: `rand` is seeded predictably enough that an
+attacker who sees a few codes can narrow the next one.
+
+The length must be a positive integer; anything else raises `ArgumentError`
+instead of quietly producing a code of the wrong size.
+
+### Message template
+
+`OdtSdk::Otp::Template` holds the copy the code goes into:
+
+```ruby
+OdtSdk::Otp::Template.new.render('0473')
+# => "Tu codigo de verificacion es 0473"
+
+OdtSdk::Otp::Template.new('%{code} es tu codigo, no lo compartas').render('0473')
+# => "0473 es tu codigo, no lo compartas"
+```
+
+`%{code}` is where the code lands, and it is substituted literally rather than
+through `format`, so a `%` elsewhere in your copy ("50% de descuento") is left
+alone instead of blowing up as a malformed format string.
+
+A template without `%{code}` is refused at construction:
+
+```ruby
+OdtSdk::Otp::Template.new('Tu codigo de verificacion')
+# => ArgumentError: An OTP template must carry the %{code} placeholder,
+#    otherwise the code never reaches the user.
+```
+
+That check exists because the failure it prevents is invisible: the SMS sends
+fine, ODT answers `"0"`, and the user simply never gets a code.
+
+The default copy is written **without accents** on purpose — under the default
+encoding ODT replaces them. A template that carries accents is refused when you
+build it, so the problem surfaces at boot rather than on the first code you try
+to send:
+
+```ruby
+OdtSdk::Otp::Template.new('Tu código es %{code}')
+# => ArgumentError: An OTP template carries characters this encoding replaces.
+#    Write it without accents, or build it with encoding: Encodings::UCS2.
+
+OdtSdk::Otp::Template.new('Tu código es %{code}', encoding: OdtSdk::Encodings::UCS2)
+# => works — send with the matching encode:
+```
+
+The `encoding:` you build the template with is the one you must send with. They
+are checked in both places: here against the copy, and again in `Message` against
+the finished body.
+
+### Storing the code
+
+`OdtSdk::Otp::MemoryStore` keeps the code against the phone number, with a TTL:
+
+```ruby
+store = OdtSdk::Otp::MemoryStore.new
+
+store.write('5500000010', '0473')             # expires in 300 seconds
+store.write('5500000010', '0473', ttl: 60)
+
+entry = store.read('5500000010')
+entry.code        # => "0473"
+entry.attempts    # => 0
+entry.expired?    # => false
+
+store.increment_attempts('5500000010')
+store.delete('5500000010')                    # consume it, one use only
+```
+
+Those four methods — `write`, `read`, `increment_attempts`, `delete` — are the
+whole store interface. Anything answering to them can be swapped in, which is how
+a Redis-backed store fits later without the rest of the SDK changing.
+
+**`read` returns expired entries rather than hiding them.** Verification needs to
+tell "your code ran out" apart from "you never asked for one", and those are the
+same answer if expiry returns `nil`. The entry knows whether it is `expired?`; the
+caller decides what that means.
+
+Entries are immutable — `increment_attempts` swaps in a new one rather than
+mutating in place — and every operation is behind a mutex, so a threaded server
+counts attempts correctly instead of losing some to a race.
+
+Expired entries stick around for an hour so they keep reporting as expired, then
+get swept on the next write. Nothing is stored on disk and nothing survives a
+restart: this is a single-process store, and a code written by one Puma worker is
+invisible to the next. Production with more than one process needs the Redis
+store.
+
+The code is held in plain text. That is fine for a value that lives 300 seconds
+in one process's memory; a shared store is a different question.
+
+### Sending a code
+
+`OdtSdk::Otp::Manager` puts the three steps together — draw a code, store it,
+send it — reusing `Client#send_sms` for the last one:
+
+```ruby
+manager = OdtSdk::Otp::Manager.new(client)
+
+response = manager.send_code(number: '5500000010', carrier: OdtSdk::Carriers::TELCEL)
+response.success?  # => true
+```
+
+It returns the same `Response` any other send does, so `status`, `queued?` and
+`retryable?` all apply.
+
+Every piece is swappable, and the defaults are the ones each piece already
+declares:
+
+```ruby
+OdtSdk::Otp::Manager.new(
+  client,
+  store: OdtSdk::Otp::MemoryStore.new,
+  template: OdtSdk::Otp::Template.new('%{code} es tu codigo, no lo compartas'),
+  length: 6,
+  ttl: 60
+)
+```
+
+The template's `encoding` is sent as the message's `encode`, so a template built
+for UCS-2 goes out as UCS-2 and its accents survive. Building the template for
+one encoding and sending with another is the mismatch that mangles a code; the
+manager removes the chance to get it wrong.
+
+Extra keywords are forwarded to `send_sms` — `service_id:` to send through a
+different application, for instance. `message:` is refused: the body comes from
+the template, and silently replacing it would send one code and store another.
+
+The code is stored **before** the send, never after: a response that gets lost in
+transit still leaves a code the user can verify. If the send is refused locally —
+a bad number, an invalid carrier — the stored code is removed again, so nothing
+is left behind for a message that never left the process.
+
+A send that ODT rejects keeps the stored code. It expires on its own, and a `"1"`
+means the SMS may still arrive, so deleting it would break the verification that
+follows.
 
 ## Development
 
