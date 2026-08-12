@@ -12,21 +12,7 @@ RSpec.describe OdtSdk::Client do
     end
   end
 
-  let :transport do
-    Class.new do
-      attr_reader :requests
-
-      def initialize
-        @requests = []
-      end
-
-      def post(url, payload)
-        @requests << { url: url, payload: payload }
-
-        { status: 200, body: { 'result' => { 'code' => '0' } } }
-      end
-    end.new
-  end
+  let(:transport) { FakeTransport.new }
 
   let(:notify) { { notify: { number: '5500000010', message: 'Tu codigo es 123456' } } }
   let(:sent) { transport.requests.last[:payload] }
@@ -185,19 +171,7 @@ RSpec.describe OdtSdk::Client do
     subject(:client) { described_class.new configuration, transport: failing_transport }
 
     let :failing_transport do
-      Class.new do
-        attr_reader :requests
-
-        def initialize
-          @requests = []
-        end
-
-        def post(url, payload)
-          @requests << { url: url, payload: payload }
-
-          { status: 200, body: { 'result' => { 'code' => '101', 'message' => 'malformed' } } }
-        end
-      end.new
+      FakeTransport.new body: { 'result' => { 'code' => '101', 'message' => 'malformed' } }
     end
 
     def send_it!

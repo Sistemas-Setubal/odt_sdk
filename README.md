@@ -45,6 +45,22 @@ end
 Each `Configuration` is an independent object, so a single process can hold
 several — one per environment or per partner.
 
+If one shared setup is all you need, the module keeps it for you:
+
+```ruby
+OdtSdk.configure do |config|
+  config.partner_id = ENV.fetch('ODT_PARTNER_ID')
+  config.secure_key = ENV.fetch('ODT_SECURE_KEY')
+  config.service_id = ENV.fetch('ODT_SERVICE_ID')
+end
+
+OdtSdk.client.send_sms(number: '5500000010', message: 'Hola', carrier: 1)
+```
+
+`OdtSdk.client` is memoized and rebuilt whenever `configure` runs again, so a
+late change is never silently ignored. `OdtSdk.reset` clears both, which is what
+you want between tests.
+
 ### Validation
 
 `validate!` requires `partner_id` and `secure_key`, and returns the
