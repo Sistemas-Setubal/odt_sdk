@@ -8,6 +8,7 @@ module OdtSdk
 
       def initialize
         @entries = {}
+        @sends = {}
         @mutex = Mutex.new
       end
 
@@ -26,6 +27,14 @@ module OdtSdk
         @mutex.synchronize { @entries[key.to_s] }
       end
 
+      def matches?(key, code)
+        entry = read key
+
+        return false if entry.nil?
+
+        Security.secure_compare entry.code, code
+      end
+
       def increment_attempts(key)
         id = key.to_s
 
@@ -42,7 +51,26 @@ module OdtSdk
         @mutex.synchronize { @entries.delete key.to_s }
       end
 
+      def record_send(key, window:)
+        @mutex.synchronize do
+          bucket = bucket_for key.to_s, window
+          count = bucket.fetch(:count) + 1
+          bucket[:count] = count
+
+          count
+        end
+      end
+
       private
+
+      def bucket_for(id, window)
+        now = Time.now
+        bucket = @sends[id]
+
+        return bucket if bucket && now < bucket.fetch(:resets_at)
+
+        @sends[id] = { count: 0, resets_at: now + window }
+      end
 
       def validate_ttl(ttl)
         return if ttl.is_a?(Numeric) && ttl.positive?

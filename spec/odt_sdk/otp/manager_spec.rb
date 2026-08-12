@@ -233,6 +233,115 @@ RSpec.describe OdtSdk::Otp::Manager do
     end
   end
 
+  describe 'send rate limit' do
+    it 'allows five sends per window by default' do
+      expect(manager.max_sends).to eq(5)
+    end
+
+    it 'uses a fifteen minute window by default' do
+      expect(manager.send_window).to eq(900)
+    end
+
+    it 'names those defaults in constants' do
+      expect([described_class::DEFAULT_MAX_SENDS, described_class::DEFAULT_SEND_WINDOW]).to eq([5, 900])
+    end
+
+    it 'lets the fifth send through' do
+      4.times { send_it }
+
+      expect(send_it).to be_success
+    end
+
+    it 'refuses the sixth' do
+      5.times { send_it }
+
+      expect { send_it }.to raise_error(OdtSdk::RateLimitError)
+    end
+
+    it 'is a rescuable OdtSdk::Error' do
+      5.times { send_it }
+
+      expect { send_it }.to raise_error(OdtSdk::Error)
+    end
+
+    it 'names the number in the error' do
+      5.times { send_it }
+
+      expect { send_it }.to raise_error(OdtSdk::RateLimitError, /#{number}/)
+    end
+
+    it 'carries the limit and window for a retry-after header' do
+      5.times { send_it }
+
+      expect { send_it }.to raise_error(an_object_having_attributes(limit: 5, window: 900))
+    end
+
+    it 'never reaches the transport once refused' do
+      5.times { send_it }
+      sent_so_far = transport.requests.size
+      begin
+        send_it
+      rescue OdtSdk::RateLimitError
+        nil
+      end
+
+      expect(transport.requests.size).to eq(sent_so_far)
+    end
+
+    it 'leaves the previous code usable after a refusal' do
+      4.times { send_it }
+      code = manager.store.read(number).code
+      2.times do
+        send_it
+      rescue OdtSdk::RateLimitError
+        nil
+      end
+
+      expect(manager.verify(number: number, code: code).reason).to eq(:mismatch)
+    end
+
+    it 'counts per number' do
+      5.times { send_it }
+
+      expect(manager.send_code(number: '5500000011', carrier: 1)).to be_success
+    end
+
+    it 'lets sends through again once the window rolls over' do
+      now = Time.now
+      allow(Time).to receive(:now).and_return(now)
+      5.times { send_it }
+      allow(Time).to receive(:now).and_return(now + 901)
+
+      expect(send_it).to be_success
+    end
+
+    it 'still refuses just before the window rolls over' do
+      now = Time.now
+      allow(Time).to receive(:now).and_return(now)
+      5.times { send_it }
+      allow(Time).to receive(:now).and_return(now + 899)
+
+      expect { send_it }.to raise_error(OdtSdk::RateLimitError)
+    end
+
+    it 'honours a custom limit' do
+      manager = described_class.new client, max_sends: 1
+      manager.send_code number: number, carrier: 1
+
+      expect { manager.send_code number: number, carrier: 1 }.to raise_error(OdtSdk::RateLimitError)
+    end
+
+    it 'honours a custom window' do
+      manager = described_class.new client, max_sends: 1, send_window: 60
+      now = Time.now
+      allow(Time).to receive(:now).and_return(now)
+      manager.send_code number: number, carrier: 1
+      allow(Time).to receive(:now).and_return(now + 61)
+
+      expect(manager.send_code(number: number, carrier: 1)).to be_success
+    end
+  end
+
   describe '#valid?' do
     def stored_code
       manager.store.read(number).code

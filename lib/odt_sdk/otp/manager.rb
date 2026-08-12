@@ -4,6 +4,8 @@ module OdtSdk
   module Otp
     class Manager
       DEFAULT_MAX_ATTEMPTS = 3
+      DEFAULT_MAX_SENDS = 5
+      DEFAULT_SEND_WINDOW = 900
 
       attr_reader :client
 
@@ -36,8 +38,17 @@ module OdtSdk
         raise ArgumentError, "Invalid max_attempts #{limit.inspect}. Use a positive integer."
       end
 
+      def max_sends
+        @options.fetch :max_sends, DEFAULT_MAX_SENDS
+      end
+
+      def send_window
+        @options.fetch :send_window, DEFAULT_SEND_WINDOW
+      end
+
       def send_code(number:, carrier:, **fields)
         reject_body_override fields
+        demand_send_allowance number
 
         code = Generator.numeric length
         store.write number, code, ttl: ttl
@@ -55,7 +66,7 @@ module OdtSdk
         return Result.new :expired if entry.expired?
         return Result.new :too_many_attempts if entry.attempts >= max_attempts
 
-        return consume number if Security.secure_compare entry.code, code
+        return consume number if store.matches? number, code
 
         store.increment_attempts number
 
@@ -76,6 +87,14 @@ module OdtSdk
 
       def deliver(**fields)
         client.send_sms(**{ encode: template.encoding }.merge(fields))
+      end
+
+      def demand_send_allowance(number)
+        sends = store.record_send number, window: send_window
+
+        return if sends <= max_sends
+
+        raise RateLimitError.new(number, max_sends, send_window)
       end
 
       def reject_body_override(fields)
