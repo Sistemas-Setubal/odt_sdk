@@ -13,22 +13,7 @@ RSpec.describe OdtSdk::Otp::Manager do
     end
   end
 
-  let :transport do
-    Class.new do
-      attr_reader :requests
-
-      def initialize
-        @requests = []
-      end
-
-      def post(url, payload)
-        @requests << { url: url, payload: payload }
-
-        { status: 200, body: { 'result' => { 'code' => '0' } } }
-      end
-    end.new
-  end
-
+  let(:transport) { FakeTransport.new }
   let(:client) { OdtSdk::Client.new configuration, transport: transport }
   let(:number) { '5500000010' }
   let(:sent) { transport.requests.last[:payload][:notify] }
