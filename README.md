@@ -613,9 +613,22 @@ store.increment_attempts('5500000010')
 store.delete('5500000010')                    # consume it, one use only
 ```
 
-Those four methods — `write`, `read`, `increment_attempts`, `delete` — are the
-whole store interface. Anything answering to them can be swapped in, which is how
-a Redis-backed store fits later without the rest of the SDK changing.
+Six methods make up the whole store interface — `write`, `read`, `matches?`,
+`increment_attempts`, `delete` and `record_send`. Anything answering to them can
+be swapped in.
+
+That interface is executable, not just described: `spec/support/shared_examples/otp_store.rb`
+holds the contract, and both stores run it.
+
+```ruby
+RSpec.describe MyStore do
+  subject(:store) { described_class.new }
+
+  it_behaves_like 'an OTP store'
+end
+```
+
+Point it at your own store and you find out whether it really is a drop-in.
 
 **`read` returns expired entries rather than hiding them.** Verification needs to
 tell "your code ran out" apart from "you never asked for one", and those are the
@@ -634,6 +647,65 @@ store.
 
 The code is held in plain text. That is fine for a value that lives 300 seconds
 in one process's memory; a shared store is a different question.
+
+#### Redis
+
+`OdtSdk::Otp::RedisStore` answers to the same four methods and swaps straight in:
+
+```ruby
+manager = OdtSdk::Otp::Manager.new(client, store: OdtSdk::Otp::RedisStore.new(Redis.new))
+```
+
+The Redis client is injected, never required — the SDK does not depend on the
+`redis` gem and never opens a connection of its own. Anything answering to
+`multi`, `del`, `hset`, `hgetall`, `hincrby`, `exists?` and `expire` works,
+including a connection pool wrapper or a test double.
+
+Keys are namespaced (`odt_sdk:otp:<number>` by default, override with
+`namespace:`) so they cannot collide with the rest of your database.
+
+**The Redis TTL is deliberately longer than the code's.** The key lives for the
+code's TTL plus an hour, and expiry is judged from the `expires_at` stored inside
+it. If Redis reclaimed the key at the logical expiry, `read` would return `nil`
+and verification could no longer tell `:expired` from `:not_found` — the same
+reason `MemoryStore` keeps expired entries around. The Redis TTL is there so
+nothing leaks, not to decide expiry.
+
+Attempts are counted with `HINCRBY`, server side. That matters more here than in
+memory: with several application processes verifying at once, a read-modify-write
+counter would lose increments, and that counter is what caps brute force.
+
+Writes go through `MULTI` so a key is never left without its TTL.
+
+**The code is never stored in plain text.** Redis holds an HMAC-SHA256 digest and
+a random 16-byte salt, and the code cannot be read back — `read(...).code` is
+`nil` by design. Verification goes through `matches?`, which recomputes the
+digest and compares it in constant time:
+
+```
+digest      84af11308ddb117b61c975870570d1f61ebfde4412e94f680d187ebdf1d4a347
+salt        489b4616c16044a09c3306485201f71a
+expires_at  1786493538.1675591
+attempts    0
+```
+
+Pass a **pepper** — a secret your application holds and Redis never sees:
+
+```ruby
+OdtSdk::Otp::RedisStore.new(Redis.new, pepper: Rails.application.credentials.otp_pepper)
+```
+
+This is the part that actually protects you, and it is worth being blunt about
+why. A 4-digit code has 10,000 possibilities, so salting alone buys very little:
+anyone holding a Redis dump can hash all 10,000 candidates against the salt in
+milliseconds. A pepper breaks that, because the dump no longer contains
+everything needed to compute the digest. Salting still does its job — it stops
+identical codes looking identical across numbers and across rewrites — but the
+pepper is what makes a leaked snapshot useless.
+
+Without one, treat the hashing as protection against casual exposure — an
+`RDB` file, a `KEYS *`, a log line, someone glancing at a dashboard — and not
+against an attacker who has the data and wants a specific code.
 
 ### Sending a code
 
@@ -671,6 +743,42 @@ manager removes the chance to get it wrong.
 Extra keywords are forwarded to `send_sms` — `service_id:` to send through a
 different application, for instance. `message:` is refused: the body comes from
 the template, and silently replacing it would send one code and store another.
+
+#### Send rate limit
+
+A number can be sent **5 codes every 15 minutes**. The sixth raises
+`OdtSdk::RateLimitError` without touching the network:
+
+```ruby
+OdtSdk::Otp::Manager.new(client, max_sends: 3, send_window: 600)
+```
+
+```ruby
+rescue OdtSdk::RateLimitError => e
+  e.number  # => "5500000010"
+  e.limit   # => 5
+  e.window  # => 900 — enough to build a Retry-After
+end
+```
+
+This closes the hole the attempt limit leaves open. Three guesses per code is a
+tight cap, but without a send limit an attacker just asks for code after code and
+gets three fresh guesses each time — 4 digits stops being 10,000 possibilities
+and becomes however many codes they can trigger. Capping sends is what makes the
+attempt limit mean something. It also stops your ODT bill being someone else's
+denial-of-wallet.
+
+Counts are per number and kept in the store, so with Redis several application
+processes share one budget rather than each granting its own. The window is
+fixed, not sliding: it starts on the first send and resets whole.
+
+A refused send changes nothing else — the previously stored code stays valid until
+its own TTL runs out.
+
+One wrinkle worth knowing: the counter is spent before the message is validated,
+so a send refused for a bad number or carrier still uses one of the five. That
+keeps a malformed retry loop from being free, but it means a bug in your calling
+code burns a real user's budget.
 
 The code is stored **before** the send, never after: a response that gets lost in
 transit still leaves a code the user can verify. If the send is refused locally —

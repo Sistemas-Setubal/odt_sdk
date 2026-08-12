@@ -7,6 +7,18 @@ module OdtSdk
 
   class TransportError < Error; end
 
+  class RateLimitError < Error
+    attr_reader :number, :limit, :window
+
+    def initialize(number, limit, window)
+      @number = number
+      @limit = limit
+      @window = window
+
+      super("Too many OTP sends for #{number}: #{limit} allowed every #{window} seconds.")
+    end
+  end
+
   class ApiError < Error
     attr_reader :code, :api_message, :response
 
