@@ -281,6 +281,145 @@ own transport:
 OdtSdk::Client.new(config, transport: fake)
 ```
 
+## Bulk sending
+
+The ODT API takes **one number per request**, so a bulk send is N requests.
+`Client#send_bulk` does that fan-out and answers a single `Bulk::Result`:
+
+```ruby
+result = client.send_bulk(
+  numbers: %w[5500000010 5500000011 5500000012],
+  message: 'Tu codigo es 123456',
+  carrier: 1
+)
+
+result.size       # => 3
+result.successes  # => [#<OdtSdk::Bulk::Delivery ...>, ...]
+result.success?   # => true
+```
+
+Every field `send_sms` accepts is accepted here and shared by the whole batch,
+`service_id` included — it still falls back to the configuration. Repeated
+numbers are sent once, so a dirty list does not text anyone twice.
+
+Pass `recipients:` instead when the message changes per number:
+
+```ruby
+client.send_bulk(recipients: [
+  { number: '5500000010', message: 'Tu codigo es 111111', carrier: 1 },
+  { number: '5500000011', message: 'Tu codigo es 222222', carrier: 1 }
+])
+```
+
+Fields given at the top level are merged into every recipient, and each
+recipient wins on conflict:
+
+```ruby
+client.send_bulk(carrier: 1, encode: OdtSdk::Encodings::UCS2, recipients: [...])
+```
+
+### One bad number never stops the batch
+
+Validation errors and transport errors are captured per recipient, so a
+malformed number in the middle of a list does not cancel the rest:
+
+```ruby
+result = client.send_bulk(numbers: %w[bad 5500000011], message: 'Tu codigo es 123456', carrier: 1)
+
+result.success?   # => false
+result.failures.map(&:to_h)
+# => [{ number: "bad", status: :invalid,
+#       reason: "Invalid number \"bad\". ODT expects an MSISDN of 10 digits." }]
+```
+
+Each `Bulk::Delivery` carries the `item` it was built from, its `number`, a
+`status` and whichever of `response` / `error` explains it:
+
+| Status | Meaning |
+|---|---|
+| `:success` | ODT answered `code == "0"`. |
+| `:queued`, `:temporary_failure`, `:malformed`, `:unknown` | The `Response` status ODT answered. |
+| `:invalid` | The message never left — it failed `Message` validation. |
+| `:transport_error` | The request itself failed (timeout, DNS, TLS). |
+| `:error` | The dispatcher raised while enqueueing. |
+| `:enqueued` | Handed to a dispatcher, not sent yet. |
+
+`result.retryable` is the subset worth sending again — ODT's `code == "2"` plus
+the transport errors. Every delivery keeps the fields it was sent with, so
+feeding them back is a one-liner:
+
+```ruby
+client.send_bulk(recipients: result.retryable.map(&:item))
+```
+
+`send_bulk!` raises `OdtSdk::BulkError` when any delivery failed, and the error
+carries the whole result:
+
+```ruby
+client.send_bulk!(numbers: %w[bad], message: 'Tu codigo es 123456', carrier: 1)
+# => OdtSdk::BulkError: 1 of 1 bulk messages failed.
+
+rescue OdtSdk::BulkError => e
+  e.result.failures  # => [#<OdtSdk::Bulk::Delivery ...>]
+end
+```
+
+### Concurrency
+
+`send_bulk` is sequential by default. `concurrency:` spreads the batch over a
+fixed thread pool, and `throttle:` pauses that many seconds after each request:
+
+```ruby
+client.send_bulk(numbers: numbers, message: 'Tu codigo es 123456', carrier: 1,
+                 concurrency: 4, throttle: 0.05)
+```
+
+The deliveries keep the order of the input list regardless of the worker that
+sent each one. Every request signs its own `security` block, so threads never
+share a timestamp or a hash.
+
+### Background jobs
+
+Long lists do not belong in a web request, and this gem does not ship a job
+backend — retries, backoff and observability are your queue's job, not the
+SDK's. Pass a `dispatcher:` instead: any object responding to `#call(item)`.
+`send_bulk` then hands it one item per recipient and sends nothing itself:
+
+```ruby
+client.send_bulk(
+  numbers: numbers,
+  message: 'Tu codigo es 123456',
+  carrier: 1,
+  dispatcher: ->(item) { OdtSmsJob.perform_later(item) }
+)
+# => every delivery comes back with status :enqueued
+```
+
+Each item is a plain hash of `send_sms` keyword arguments — JSON-serializable,
+so it survives the trip through ActiveJob or Sidekiq:
+
+```ruby
+{ number: '5500000010', message: 'Tu codigo es 123456', carrier: 1 }
+```
+
+One job per SMS keeps the retry at the right granularity: the queue re-runs the
+number that failed, not the other 499.
+
+```ruby
+# app/jobs/odt_sms_job.rb
+class OdtSmsJob < ApplicationJob
+  retry_on OdtSdk::TransportError, wait: :polynomially_longer, attempts: 5
+
+  def perform(item)
+    OdtSdk.client.send_sms!(**item.symbolize_keys)
+  end
+end
+```
+
+A dispatcher that raises does not abort the batch either — that recipient comes
+back as `:error` with the exception on it, so a queue outage leaves you a list of
+who never got enqueued.
+
 ## Notify block
 
 The other half of every send is the `notify` block. `OdtSdk::Message` holds the

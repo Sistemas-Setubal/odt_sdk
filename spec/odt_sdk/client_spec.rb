@@ -305,6 +305,99 @@ RSpec.describe OdtSdk::Client do
     end
   end
 
+  describe '#send_bulk' do
+    before { configuration.service_id = 'EXAMPLE_1' }
+
+    def send_many(**overrides)
+      client.send_bulk(**{ numbers: %w[5500000010 5500000011],
+                           message: 'Tu codigo es 123456', carrier: 1 }.merge(overrides))
+    end
+
+    it 'sends one request per number' do
+      send_many
+
+      expect(transport.numbers).to eq(%w[5500000010 5500000011])
+    end
+
+    it 'signs every request on its own' do
+      send_many
+
+      expect(transport.requests.map { |request| request[:payload][:security][:hash] }).to all(be_a(String))
+    end
+
+    it 'fills in the configured service_id' do
+      send_many
+
+      expect(transport.last_notify[:service_id]).to eq('EXAMPLE_1')
+    end
+
+    it 'answers a result carrying every delivery' do
+      expect(send_many.size).to eq(2)
+    end
+
+    it 'reports the batch as successful' do
+      expect(send_many).to be_success
+    end
+
+    it 'accepts a recipient hash per number' do
+      result = client.send_bulk recipients: [{ number: '5500000010', message: 'uno', carrier: 1 },
+                                             { number: '5500000011', message: 'dos', carrier: 1 }]
+
+      expect(result.successes.size).to eq(2)
+    end
+
+    it 'sends the message each recipient carries' do
+      client.send_bulk recipients: [{ number: '5500000010', message: 'uno', carrier: 1 }]
+
+      expect(transport.last_notify[:message]).to eq('uno')
+    end
+
+    it 'sends each number only once' do
+      send_many numbers: %w[5500000010 5500000010]
+
+      expect(transport.requests.size).to eq(1)
+    end
+
+    it 'collects a bad number without dropping the rest' do
+      expect(send_many(numbers: %w[bad 5500000011]).failures.size).to eq(1)
+    end
+
+    it 'spreads the batch across workers' do
+      expect(send_many(concurrency: 2).successes.size).to eq(2)
+    end
+
+    it 'hands the batch to a dispatcher instead of sending it' do
+      client.send_bulk numbers: %w[5500000010], message: 'uno', carrier: 1, dispatcher: ->(item) { item }
+
+      expect(transport.requests).to be_empty
+    end
+
+    it 'rejects a batch without recipients' do
+      expect { client.send_bulk message: 'uno' }.to raise_error(ArgumentError)
+    end
+  end
+
+  describe '#send_bulk!' do
+    before { configuration.service_id = 'EXAMPLE_1' }
+
+    it 'answers the result when every message lands' do
+      result = client.send_bulk! numbers: %w[5500000010], message: 'uno', carrier: 1
+
+      expect(result).to be_success
+    end
+
+    it 'raises when a message fails' do
+      expect { client.send_bulk! numbers: %w[bad], message: 'uno', carrier: 1 }
+        .to raise_error(OdtSdk::BulkError, '1 of 1 bulk messages failed.')
+    end
+
+    it 'carries the result on the error' do
+      client.send_bulk! numbers: %w[bad], message: 'uno', carrier: 1
+    rescue OdtSdk::BulkError => error
+      expect(error.result.failures.first.status).to eq(:invalid)
+    end
+  end
+
   def attempt_request
     client.request notify
   rescue OdtSdk::ConfigurationError

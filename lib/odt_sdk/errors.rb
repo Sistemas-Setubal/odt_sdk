@@ -19,6 +19,16 @@ module OdtSdk
     end
   end
 
+  class BulkError < Error
+    attr_reader :result
+
+    def initialize(result)
+      @result = result
+
+      super("#{result.failures.size} of #{result.size} bulk messages failed.")
+    end
+  end
+
   class ApiError < Error
     attr_reader :code, :api_message, :response
 
