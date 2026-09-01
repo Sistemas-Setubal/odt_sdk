@@ -4,6 +4,8 @@ module OdtSdk
   class Client
     SEND_PATH = '/sendsms'
 
+    BULK_OPTIONS = %i[concurrency throttle dispatcher].freeze
+
     attr_reader :configuration
 
     def initialize(configuration, transport: nil)
@@ -29,6 +31,19 @@ module OdtSdk
       ensure_sent send_sms(**fields)
     end
 
+    def send_bulk(numbers: nil, recipients: nil, **options)
+      batch = Bulk::Batch.new numbers: numbers, recipients: recipients, **options.except(*BULK_OPTIONS)
+      pool = Bulk::Pool.new concurrency: options[:concurrency], throttle: options[:throttle]
+
+      warm_shared_state
+
+      Bulk::Runner.new(self, pool: pool, dispatcher: options[:dispatcher]).call batch
+    end
+
+    def send_bulk!(**options)
+      ensure_delivered send_bulk(**options)
+    end
+
     def request(payload)
       reply = transport.post send_url, payload.merge(security: security.build)
 
@@ -40,6 +55,17 @@ module OdtSdk
     end
 
     private
+
+    def warm_shared_state
+      transport
+      security
+    end
+
+    def ensure_delivered(result)
+      raise BulkError, result if result.failure?
+
+      result
+    end
 
     def ensure_sent(response)
       raise ApiError, response if response.failure?
